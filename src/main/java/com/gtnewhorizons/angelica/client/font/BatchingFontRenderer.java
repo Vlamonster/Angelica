@@ -6,7 +6,9 @@ import com.gtnewhorizons.angelica.mixins.interfaces.FontRendererAccessor;
 import it.unimi.dsi.fastutil.chars.Char2ShortOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import jss.util.RandomXoshiro256StarStar;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
+import net.minecraft.client.gui.ScaledResolution;
 import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.util.MathHelper;
 import net.minecraft.util.ResourceLocation;
@@ -153,7 +155,7 @@ public class BatchingFontRenderer {
         return idx;
     }
 
-    private void pushDrawCmd(int startIdx, int idxCount, ResourceLocation texture) {
+    private void pushDrawCmd(int startIdx, int idxCount, ResourceLocation texture, boolean isUnicode) {
         if (!batchCommands.isEmpty()) {
             final FontDrawCmd lastCmd = batchCommands.get(batchCommands.size() - 1);
             final int prevEndVtx = lastCmd.startVtx + lastCmd.idxCount;
@@ -169,7 +171,7 @@ public class BatchingFontRenderer {
             }
         }
         final FontDrawCmd cmd = batchCommandPool.pop();
-        cmd.reset(startIdx, idxCount, texture);
+        cmd.reset(startIdx, idxCount, texture, isUnicode);
         batchCommands.add(cmd);
     }
 
@@ -177,12 +179,14 @@ public class BatchingFontRenderer {
 
         public int startVtx;
         public int idxCount;
+        public boolean isUnicode;
         public ResourceLocation texture;
 
-        public void reset(int startVtx, int vtxCount, ResourceLocation texture) {
+        public void reset(int startVtx, int vtxCount, ResourceLocation texture, boolean isUnicode) {
             this.startVtx = startVtx;
             this.idxCount = vtxCount;
             this.texture = texture;
+            this.isUnicode = isUnicode;
         }
 
         @Override
@@ -283,7 +287,21 @@ public class BatchingFontRenderer {
             }
             batchIndices.limit(cmd.startVtx + cmd.idxCount);
             batchIndices.position(cmd.startVtx);
+
+            Minecraft mc = Minecraft.getMinecraft();
+            int scaleFactor = new ScaledResolution(mc, mc.displayWidth, mc.displayHeight).getScaleFactor();
+            boolean shouldApplyFilter = cmd.isUnicode && scaleFactor % 2 != 0;
+
+            if (shouldApplyFilter) {
+                GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
+                GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
+            }
             GL11.glDrawElements(GL11.GL_TRIANGLES, batchIndices);
+
+            if (shouldApplyFilter) {
+                GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+                GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+            }
         }
 
         GL11.glDisableClientState(GL11.GL_TEXTURE_COORD_ARRAY);
@@ -370,7 +388,7 @@ public class BatchingFontRenderer {
                     if (curUnderline && underlineStartX != underlineEndX) {
                         final int ulIdx = idxWriterIndex;
                         pushUntexRect(underlineStartX, underlineY, underlineEndX - underlineStartX, 1.0f, curColor);
-                        pushDrawCmd(ulIdx, 6, null);
+                        pushDrawCmd(ulIdx, 6, null, false);
                         underlineStartX = underlineEndX;
                     }
                     if (curStrikethrough && strikethroughStartX != strikethroughEndX) {
@@ -381,7 +399,7 @@ public class BatchingFontRenderer {
                             strikethroughEndX - strikethroughStartX,
                             1.0f,
                             curColor);
-                        pushDrawCmd(ulIdx, 6, null);
+                        pushDrawCmd(ulIdx, 6, null, false);
                         strikethroughStartX = strikethroughEndX;
                     }
 
@@ -465,13 +483,13 @@ public class BatchingFontRenderer {
                     final int endColumn = this.glyphWidth[chr] & 15;
                     final float startColumnF = (float) startColumn;
                     final float endColumnF = (float) (endColumn + 1);
-                    uStart = ((float) (chr % 16 * 16) + startColumnF) / 256.0f;
-                    vStart = ((float) ((chr & 255) / 16 * 16)) / 256.0f;
+                    uStart = ((float) (chr % 16 * 16) + startColumnF + 0.21f) / 256.0f;
+                    vStart = ((float) ((chr & 255) / 16 * 16) + 0.21f) / 256.0f;
                     final float chrWidth = endColumnF - startColumnF - 0.02F;
                     glyphW = chrWidth / 2.0f + 1.0f;
                     xAdvance = (endColumnF - startColumnF) / 2.0F + 1.0F;
-                    uSz = chrWidth / 256.0f;
-                    vSz = 15.98f / 256.0f;
+                    uSz = (chrWidth - 0.42f) / 256.0f;
+                    vSz = (16.0f - 0.42f) / 256.0f;
 
                 } else {
                     // Draw "ASCII" char
@@ -558,7 +576,7 @@ public class BatchingFontRenderer {
                     vtxCount += 4;
                 }
 
-                pushDrawCmd(idxId, vtxCount / 2 * 3, texture);
+                pushDrawCmd(idxId, vtxCount / 2 * 3, texture, chr > 255);
                 curX += xAdvance + (curBold ? shadowOffset : 0.0f);
                 underlineEndX = curX;
                 strikethroughEndX = curX;
@@ -567,7 +585,7 @@ public class BatchingFontRenderer {
             if (curUnderline && underlineStartX != underlineEndX) {
                 final int ulIdx = idxWriterIndex;
                 pushUntexRect(underlineStartX, underlineY, underlineEndX - underlineStartX, 1.0f, curColor);
-                pushDrawCmd(ulIdx, 6, null);
+                pushDrawCmd(ulIdx, 6, null, false);
             }
             if (curStrikethrough && strikethroughStartX != strikethroughEndX) {
                 final int ulIdx = idxWriterIndex;
@@ -577,7 +595,7 @@ public class BatchingFontRenderer {
                     strikethroughEndX - strikethroughStartX,
                     1.0f,
                     curColor);
-                pushDrawCmd(ulIdx, 6, null);
+                pushDrawCmd(ulIdx, 6, null, false);
             }
 
         } finally {
